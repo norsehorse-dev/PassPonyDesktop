@@ -3734,6 +3734,7 @@ dependencies = [
  "egui",
  "git2",
  "image",
+ "openssl-sys",
  "pass-core",
  "pgp",
  "rand 0.8.8",

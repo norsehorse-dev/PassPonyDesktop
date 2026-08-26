@@ -85,6 +85,16 @@ arboard = { version = "3", optional = true }
 # Only the PNG codec is needed; keep the dependency lean.
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 
+# git2 (pulled in by pass-core for git sync) links OpenSSL for HTTPS. Only the
+# universal macOS build needs help: it cross-compiles its x86_64 slice on an
+# arm64 host, where pkg-config cannot find an x86_64 system OpenSSL. Vendoring —
+# building OpenSSL from source via openssl-src — fixes that, and feature
+# unification makes git2 link this copy. Scoped to macOS ONLY on purpose: Linux
+# keeps the conventional dynamic libssl (the right thing for a .deb), and Windows
+# uses SChannel and never pulls openssl-sys at all.
+[target.'cfg(target_os = "macos")'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
 [dev-dependencies]
 tempfile = "3"
 git2 = "0.20"

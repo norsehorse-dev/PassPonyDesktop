@@ -73,8 +73,11 @@ Then create the repo and push `main` before the first tag — the release workfl
 ```sh
 gh repo create norsehorse-dev/PassPonyDesktop --public --source=. --push \
   --description "pass and passage password stores on the desktop — native Rust, interoperable with PassPony on iOS and Android"
+```
 
-# Homepage and topics are not create-time flags; set them once the repo exists.
+Homepage and topics are not create-time flags, so set them once the repo exists:
+
+```sh
 gh repo edit norsehorse-dev/PassPonyDesktop \
   --homepage "https://passpony.app/desktop" \
   --add-topic rust,egui,password-manager,pass,passage,openpgp,age,gpg,totp,encryption,cross-platform,desktop

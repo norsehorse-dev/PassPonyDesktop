@@ -123,6 +123,19 @@ fn enc(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A valid `file://` URL for a local path, on every platform. Unix paths are
+    /// already `/…` (→ `file:///…`); a Windows path like `C:\a\b` becomes
+    /// `file:///C:/a/b` — string-concatenating `file://` onto the raw backslash
+    /// form gives libgit2 a path it rejects, which is the bug this avoids.
+    fn file_url(path: &std::path::Path) -> String {
+        let s = path.display().to_string().replace('\\', "/");
+        if s.starts_with('/') {
+            format!("file://{s}")
+        } else {
+            format!("file:///{s}")
+        }
+    }
+
     #[test]
     fn credential_url_roundtrip() {
         assert_eq!(
@@ -165,9 +178,9 @@ mod tests {
         let bare = tmp.path().join("remote.git");
         git2::build::RepoBuilder::new()
             .bare(true)
-            .clone(&format!("file://{}", s1.display()), &bare)
+            .clone(&file_url(&s1), &bare)
             .unwrap();
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = file_url(&bare);
         set_remote(&s1, &bare_url).unwrap();
         fetch(&s1).unwrap();
 

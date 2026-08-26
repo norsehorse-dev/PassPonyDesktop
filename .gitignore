@@ -1,0 +1,17 @@
+/target
+/dist
+_to_delete/
+__pycache__/
+*.pyc
+**/*.rs.bk
+.DS_Store
+
+# Release credentials. Never commit these.
+.*-release-env
+*-release-env
+.env
+.env.*
+*.p12
+*.pem
+*.cer
+PassPonyDesktop-*.tar.gz

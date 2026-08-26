@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PassPony
+GenericName=Password Manager
+Comment=Browse and edit pass and passage password stores
+Exec=passpony
+Icon=passpony
+Terminal=false
+Categories=Utility;Security;
+Keywords=pass;passage;password;openpgp;age;gpg;totp;
+StartupWMClass=PassPony

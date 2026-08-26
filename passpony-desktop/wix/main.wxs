@@ -1,0 +1,161 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Copyright (C) 2017 Christopher R. Field.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<!--
+  The base template `cargo wix init` produces, hand-edited for PassPony: the
+  product name and description, the two binaries (passpony.exe and the console
+  twin passpony-cli.exe), the icon, and fresh GUIDs. The UpgradeCode and the two
+  fixed component GUIDs (RememberInstallDir, Path) are committed and must never
+  change, or an upgrade strands the prior install. ProductCode is `*`, regenerated
+  per version by design.
+-->
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='PassPony'
+        UpgradeCode='B32C494E-F823-4D5B-8E03-278C980E08C1'
+        Manufacturer='NorseHorse'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='PassPony Desktop - pass and passage password stores'
+            Manufacturer='NorseHorse'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='passpony-desktop Installation'/>
+
+        <!--
+          Remember where the app was installed, so a major upgrade reuses the
+          same directory instead of forgetting a custom location and reinstalling
+          to the default. On a first install there is no key, so APPLICATIONFOLDER
+          keeps its default below. Written by the RememberInstallDir component.
+        -->
+        <Property Id='APPLICATIONFOLDER'>
+            <RegistrySearch Id='PriorInstallDir' Root='HKLM'
+                Key='Software\NorseHorse\PassPony' Name='InstallDir' Type='raw'/>
+        </Property>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='PassPony'>
+                    <Component Id='License' Guid='*'>
+                        <File Id='LicenseFile'
+                            DiskId='1'
+                            Source='$(sys.SOURCEFILEDIR)License.rtf'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <Component Id='RememberInstallDir' Guid='E7FFF974-8CBF-42C0-BE38-5AFE3B0EE38D'>
+                        <RegistryValue Root='HKLM'
+                            Key='Software\NorseHorse\PassPony'
+                            Name='InstallDir'
+                            Type='string'
+                            Value='[APPLICATIONFOLDER]'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <Directory Id='Bin' Name='bin'>
+                        <Component Id='Path' Guid='D1822C0A-C80D-4114-9328-B88B9659E08B' KeyPath='yes'>
+                            <Environment
+                                Id='PATH'
+                                Name='PATH'
+                                Value='[Bin]'
+                                Permanent='no'
+                                Part='last'
+                                Action='set'
+                                System='yes'/>
+                        </Component>
+                        <Component Id='binary0' Guid='*'>
+                            <File
+                                Id='exe0'
+                                Name='passpony.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\passpony.exe'
+                                KeyPath='yes'/>
+                        </Component>
+                        <Component Id='binary1' Guid='*'>
+                            <File
+                                Id='exe1'
+                                Name='passpony-cli.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\passpony-cli.exe'
+                                KeyPath='yes'/>
+                        </Component>
+                    </Directory>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs all binaries and the license.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='License'/>
+            <ComponentRef Id='RememberInstallDir'/>
+
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='binary1'/>
+
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Add the install location of the [ProductName] executable to the PATH system environment variable. This allows the [ProductName] executable to be called from any location.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Icon Id='ProductICO' SourceFile='$(sys.SOURCEFILEDIR)Product.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='ProductICO' />
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+        </UI>
+
+        <WixVariable Id='WixUILicenseRtf' Value='$(sys.SOURCEFILEDIR)License.rtf'/>
+
+    </Product>
+
+</Wix>

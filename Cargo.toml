@@ -1,0 +1,35 @@
+# PassPony Desktop — a Cargo workspace mirroring AgePonyDesktop's layout: a
+# thin GUI+CLI crate over the shared, headless PassPonyCore. The core is a git
+# submodule under third_party/ (its own workspace), consumed by path and
+# excluded from this one so its `.workspace=true` inheritance resolves against
+# its own root.
+[workspace]
+members = ["passpony-desktop"]
+exclude = ["third_party/passponycore"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["NorseHorse <NorseHorse@norsehor.se>"]
+
+[workspace.dependencies]
+age = { version = "0.12", features = ["armor"] }
+pgp = "0.20"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+# A GUI app has no meaningful unwind path — a panic means a bug, and aborting is
+# smaller and faster. Cargo ignores this for test/bench targets, so the suite
+# still runs. Matches AgePony Desktop's release profile.
+panic = "abort"

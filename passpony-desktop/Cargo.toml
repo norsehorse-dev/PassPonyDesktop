@@ -1,0 +1,93 @@
+[package]
+name = "passpony-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "pass and passage password stores on the desktop"
+
+# `passpony` is what users type and what packaging refers to. default-run so
+# `cargo run` is unambiguous with two bins.
+default-run = "passpony"
+
+[[bin]]
+name = "passpony"
+path = "src/main.rs"
+
+# Windows needs a console-subsystem twin to write to a terminal at all; built
+# everywhere so it cannot rot. See src/bin/passpony-cli.rs.
+[[bin]]
+name = "passpony-cli"
+path = "src/bin/passpony-cli.rs"
+
+[lib]
+name = "passpony_desktop"
+path = "src/lib.rs"
+
+# ---------------------------------------------------------------- packaging ---
+
+[package.metadata.deb]
+# Lowercase. A deb whose Package field is PascalCase is uninstallable on strict
+# tooling, and the filename alone would not show it. CI asserts this.
+name = "passpony"
+maintainer = "NorseHorse <NorseHorse@norsehor.se>"
+copyright = "2026, NorseHorse"
+license-file = ["../LICENSE", "0"]
+section = "utils"
+priority = "optional"
+# $auto reads the built ELF and derives the real shared-library dependencies. A
+# Rust GUI binary links X11, Wayland and GL and absolutely has them; CI fails the
+# build if this comes out empty.
+depends = "$auto"
+extended-description = """
+Browse and edit pass (OpenPGP) and passage (age) password stores on the desktop. \
+Reveal and copy secrets, live TOTP codes, a password generator, and git sync with \
+per-file conflict resolution. Interoperable with PassPony on iOS and Android and \
+with the pass and passage command-line tools. No accounts, no telemetry."""
+assets = [
+    ["../target/release/passpony", "usr/bin/", "755"],
+    ["../packaging/appimage/passpony.desktop", "usr/share/applications/passpony.desktop", "644"],
+    ["../packaging/passpony.png", "usr/share/icons/hicolor/512x512/apps/passpony.png", "644"],
+    ["../README.md", "usr/share/doc/passpony/README.md", "644"],
+]
+
+[package.metadata.wix]
+# The GUIDs live in wix/main.wxs and nowhere else. They were generated once and
+# are committed: change the UpgradeCode and every prior install is stranded as a
+# separate program the upgrader cannot see. ProductCode is a different GUID and
+# is regenerated per version by design. Nothing is duplicated here on purpose.
+eula = false
+license = false
+
+[features]
+default = ["gui"]
+# The GUI is optional so the core logic (crypto backends, store wiring, verbs)
+# builds and is testable without a display stack present.
+gui = ["dep:eframe", "dep:egui", "dep:rfd", "dep:arboard", "dep:image"]
+
+[dependencies]
+pass-core = { path = "../third_party/passponycore/crates/pass-core" }
+pgp.workspace = true
+rand.workspace = true
+age.workspace = true
+zeroize.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+directories = "6"
+
+eframe = { version = "0.35", optional = true, features = ["persistence"] }
+egui = { version = "0.35", optional = true }
+rfd = { version = "0.15", optional = true }
+arboard = { version = "3", optional = true }
+# PNG decode for the real app icon (window/dock) and the rail-head texture.
+# Only the PNG codec is needed; keep the dependency lean.
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+
+[dev-dependencies]
+tempfile = "3"
+git2 = "0.20"
+# Parses the bundled font tables in a test so a Chinese string that uses a
+# character the Noto subset lacks fails `cargo test`, not a user's screenshot.
+ttf-parser = "0.25"

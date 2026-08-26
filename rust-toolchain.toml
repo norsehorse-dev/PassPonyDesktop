@@ -1,0 +1,8 @@
+# Checked in so local builds and CI use the same compiler. "stable" rather than
+# an exact pin: an exact version would also rule out drift across time, at the
+# cost of a network fetch on every fresh clone. If that trade looks worth making,
+# pin it here and nowhere else. `passpony version` reports the compiler that
+# built the binary, so drift is visible rather than assumed.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]

@@ -1,0 +1,14 @@
+PassPony Desktop
+Copyright 2026 NorseHorse
+
+This product includes software developed as part of the PassPony family
+(https://github.com/norsehorse-dev). Licensed under the Apache License, 2.0.
+
+Store model, entry codec, git sync and TOTP are provided by PassPonyCore.
+The pass (OpenPGP) backend uses rpgp; the passage backend uses the age crate.
+
+Bundled fonts (subset), each under its own license (see passpony-desktop/assets/fonts/):
+  Inter, by Rasmus Andersson — SIL Open Font License 1.1
+  JetBrains Mono, by JetBrains — SIL Open Font License 1.1
+  Noto Sans SC, by Google (Simplified Chinese glyphs) — SIL Open Font License 1.1
+  Lucide (icon glyphs), the Lucide contributors — ISC License

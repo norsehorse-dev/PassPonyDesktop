@@ -1,0 +1,32 @@
+[package]
+name = "pass-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "UniFFI bindings over pass-core for Kotlin and Swift."
+
+[lib]
+name = "pass_ffi"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+pass-core = { path = "../pass-core" }
+thiserror.workspace = true
+uniffi.workspace = true
+zeroize = "1"
+
+# Android-only Rust crypto engine for passage stores (see age_engine.rs).
+# iOS keeps its own platform engine; this dependency and the module it
+# feeds are both gated behind the age-engine feature, off by default so
+# the iOS build surface is provably unchanged.
+age = { version = "0.11", default-features = false, optional = true }
+
+[features]
+cli = ["uniffi/cli"]
+age-engine = ["dep:age"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["cli"]

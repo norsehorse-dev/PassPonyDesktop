@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use egui::{RichText, Vec2};
 
-use crate::app::App;
+use crate::app::{App, KeyPrompt};
 use crate::entry_view::group_code;
 use crate::i18n;
 use crate::theme;
@@ -71,6 +71,10 @@ pub fn detail(ui: &mut egui::Ui, app: &mut App) {
         if app.entry.is_none() {
             ui.add_space(theme::space::SM);
             ui.weak(t.opening);
+            // A YubiKey decrypt: show what the plugin is waiting for.
+            if let Some(msg) = &app.key_message {
+                ui.label(msg);
+            }
             return;
         }
 
@@ -200,4 +204,72 @@ fn totp_ring(ui: &mut egui::Ui, frac: f32, remaining: u64) {
         egui::FontId::monospace(12.0),
         ui.visuals().text_color(),
     );
+}
+
+/// The YubiKey plugin's prompt (PIN, or "is the YubiKey plugged in?"),
+/// floating over any screen while an entry opens. Answering unblocks the
+/// worker; closing the window cancels.
+pub fn key_prompt_window(ctx: &egui::Context, app: &mut App) {
+    let t = i18n::s();
+    let Some(prompt) = &app.key_prompt else {
+        return;
+    };
+    let mut open = true;
+    let mut confirm: Option<Option<bool>> = None;
+    let mut secret: Option<bool> = None;
+    egui::Window::new("YubiKey")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| match prompt {
+            KeyPrompt::Confirm { text, yes, no } => {
+                ui.label(text);
+                ui.add_space(theme::space::SM);
+                ui.horizontal(|ui| {
+                    if ui.button(yes).clicked() {
+                        confirm = Some(Some(true));
+                    }
+                    if let Some(no) = no {
+                        if ui.button(no).clicked() {
+                            confirm = Some(Some(false));
+                        }
+                    }
+                });
+            }
+            KeyPrompt::Secret { description } => {
+                ui.label(description);
+                ui.add_space(theme::space::SM);
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut app.key_pin)
+                        .password(true)
+                        .desired_width(220.0),
+                );
+                // Focus the PIN once, when the prompt opens; grabbing it every
+                // frame would swallow Enter and Tab.
+                if std::mem::take(&mut app.key_pin_focus) {
+                    field.request_focus();
+                }
+                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.horizontal(|ui| {
+                    if ui.button(t.unlock).clicked() || entered {
+                        secret = Some(true);
+                    }
+                    if ui.button(t.cancel).clicked() {
+                        secret = Some(false);
+                    }
+                });
+            }
+        });
+    if let Some(answer) = confirm {
+        app.answer_key_confirm(answer);
+    } else if let Some(send) = secret {
+        app.answer_key_secret(send);
+    } else if !open {
+        match app.key_prompt {
+            Some(KeyPrompt::Confirm { .. }) => app.answer_key_confirm(None),
+            Some(KeyPrompt::Secret { .. }) => app.answer_key_secret(false),
+            None => {}
+        }
+    }
 }

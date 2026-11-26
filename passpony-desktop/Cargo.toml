@@ -71,7 +71,13 @@ pass-core = { path = "../third_party/passponycore/crates/pass-core" }
 pgp.workspace = true
 rand.workspace = true
 age.workspace = true
+# age::Recipient's types (FileKey, Stanza), for the YubiKey recipient adapter.
+age-core = "0.12"
+# YubiKey (age-plugin-yubikey) recipients: encrypt to age1yubikey1... natively.
+pass-age-piv = { path = "../third_party/passponycore/crates/pass-age-piv" }
 zeroize.workspace = true
+# The CLI's YubiKey PIN prompt, without echo.
+rpassword = "7"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -97,6 +103,7 @@ openssl-sys = { version = "0.9", features = ["vendored"] }
 
 [dev-dependencies]
 tempfile = "3"
+p256 = "0.13"
 git2 = "0.20"
 # Parses the bundled font tables in a test so a Chinese string that uses a
 # character the Noto subset lacks fails `cargo test`, not a user's screenshot.

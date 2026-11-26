@@ -173,6 +173,16 @@ pub struct App {
     op_job: Option<tasks::Job>,
     sync_job: Option<tasks::SyncJob>,
     pending_clone_dest: Option<PathBuf>,
+    /// An entry opening on a worker thread because it may need the YubiKey.
+    decrypt_job: Option<tasks::DecryptJob>,
+    /// The YubiKey plugin's latest message ("touch your YubiKey").
+    pub key_message: Option<String>,
+    /// A YubiKey prompt waiting on the user while an entry opens.
+    pub key_prompt: Option<KeyPrompt>,
+    /// The PIN being typed into [`KeyPrompt::Secret`]; wiped once sent.
+    pub key_pin: String,
+    /// Set when a PIN prompt opens, so its field takes focus once.
+    pub key_pin_focus: bool,
 
     // First-run onboarding.
     pub onboarding: Option<Onboarding>,
@@ -239,6 +249,11 @@ impl App {
             op_job: None,
             sync_job: None,
             pending_clone_dest: None,
+            decrypt_job: None,
+            key_message: None,
+            key_prompt: None,
+            key_pin: String::new(),
+            key_pin_focus: false,
             onboarding: (!keys::is_onboarded()).then(Onboarding::new),
             lang,
             theme,
@@ -594,6 +609,7 @@ impl App {
 
     /// Drain worker channels. Called once per frame.
     pub fn poll_jobs(&mut self) {
+        self.poll_decrypt();
         if let Some(job) = &self.op_job {
             if let Some(res) = job.poll() {
                 self.op_job = None;
@@ -776,6 +792,71 @@ impl App {
         self.entry = None;
         self.entry_error = None;
         self.reveal = false;
+        // Dropping the job cancels any prompt its worker is waiting on.
+        self.decrypt_job = None;
+        self.key_message = None;
+        self.key_prompt = None;
+        self.wipe_key_pin();
+    }
+
+    fn wipe_key_pin(&mut self) {
+        use zeroize::Zeroize;
+        self.key_pin.zeroize();
+    }
+
+    /// Whether an entry is opening in the background (waiting on a YubiKey).
+    #[must_use]
+    pub fn opening_with_key(&self) -> bool {
+        self.decrypt_job.is_some()
+    }
+
+    /// Answer the YubiKey plugin's yes/no question (`None`: dismissed).
+    pub fn answer_key_confirm(&mut self, answer: Option<bool>) {
+        self.key_prompt = None;
+        if let Some(job) = &self.decrypt_job {
+            job.confirm(answer);
+        }
+    }
+
+    /// Send the typed PIN to the YubiKey plugin, or cancel (`send` false).
+    pub fn answer_key_secret(&mut self, send: bool) {
+        self.key_prompt = None;
+        let pin = send.then(|| age::secrecy::SecretString::from(self.key_pin.clone()));
+        self.wipe_key_pin();
+        if let Some(job) = &self.decrypt_job {
+            job.secret(pin);
+        }
+    }
+
+    fn poll_decrypt(&mut self) {
+        let mut events = Vec::new();
+        if let Some(job) = &self.decrypt_job {
+            while let Some(ev) = job.poll() {
+                events.push(ev);
+            }
+        }
+        for ev in events {
+            match ev {
+                tasks::DecryptEvent::Message(m) => self.key_message = Some(m),
+                tasks::DecryptEvent::Confirm { text, yes, no } => {
+                    self.key_prompt = Some(KeyPrompt::Confirm { text, yes, no });
+                }
+                tasks::DecryptEvent::Secret(description) => {
+                    self.wipe_key_pin();
+                    self.key_prompt = Some(KeyPrompt::Secret { description });
+                    self.key_pin_focus = true;
+                }
+                tasks::DecryptEvent::Done(result) => {
+                    self.decrypt_job = None;
+                    self.key_message = None;
+                    self.key_prompt = None;
+                    match result {
+                        Ok(entry) => self.entry = Some(EntryView::from_entry(&entry)),
+                        Err(e) => self.entry_error = Some(e),
+                    }
+                }
+            }
+        }
     }
 
     pub fn note_passphrase_changed(&mut self) {
@@ -1007,6 +1088,13 @@ impl App {
                 }
             },
             StoreFormat::Passage => match keys::load_age_backend() {
+                // A YubiKey identity may need the PIN and a touch: open the
+                // entry on a worker so the window stays live and can ask.
+                Ok(b) if b.has_plugin_identities() => {
+                    self.decrypt_job =
+                        Some(tasks::spawn_decrypt(store.root().to_path_buf(), name, b));
+                    return;
+                }
                 Ok(b) => store.read_entry(&name, &b as &dyn CryptoBackend),
                 Err(e) => {
                     self.entry_error = Some(e.to_string());
@@ -1019,6 +1107,18 @@ impl App {
             Err(e) => self.entry_error = Some(e.to_string()),
         }
     }
+}
+
+/// A YubiKey (age plugin) prompt shown while an entry opens.
+pub enum KeyPrompt {
+    /// A yes/no question, such as "insert YubiKey 12345678".
+    Confirm {
+        text: String,
+        yes: String,
+        no: Option<String>,
+    },
+    /// A secret, such as the PIV PIN.
+    Secret { description: String },
 }
 
 /// Whether a dropped file looks like an OpenPGP key by extension.
@@ -1087,6 +1187,8 @@ impl App {
         }
         // The per-file conflict prompt floats over any screen while a sync waits.
         panels::sync::conflict_window(ui.ctx(), self);
+        // So does a YubiKey prompt while an entry opens.
+        panels::entry::key_prompt_window(ui.ctx(), self);
     }
 }
 
@@ -1105,6 +1207,7 @@ impl eframe::App for App {
 
         // Keep the TOTP ring, clipboard countdown, and any running job live.
         let animating = self.busy
+            || self.decrypt_job.is_some()
             || self.clip_pending.is_some()
             || self
                 .entry

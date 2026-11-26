@@ -212,6 +212,8 @@ dependencies = [
  "sha2 0.10.9",
  "sha3",
  "subtle",
+ "which",
+ "wsl",
  "x25519-dalek",
  "zeroize",
 ]
@@ -233,6 +235,7 @@ dependencies = [
  "rand 0.8.8",
  "secrecy",
  "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -3777,6 +3780,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pass-age-piv"
+version = "2.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bech32",
+ "chacha20poly1305",
+ "hkdf",
+ "p256",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+ "zeroize",
+]
+
+[[package]]
 name = "pass-core"
 version = "2.1.0"
 dependencies = [
@@ -3802,6 +3819,7 @@ name = "passpony-desktop"
 version = "1.0.0"
 dependencies = [
  "age",
+ "age-core",
  "anyhow",
  "arboard",
  "directories",
@@ -3810,10 +3828,13 @@ dependencies = [
  "git2",
  "image",
  "openssl-sys",
+ "p256",
+ "pass-age-piv",
  "pass-core",
  "pgp",
  "rand 0.8.8",
  "rfd",
+ "rpassword",
  "serde",
  "serde_json",
  "tempfile",
@@ -4461,6 +4482,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpassword"
+version = "7.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa2c5d9304b618df61ff17f3d3485c6e1854a3d94902a49abbb8d43dfbe0464"
+dependencies = [
+ "libc",
+ "rtoolbox",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4479,6 +4511,16 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rtoolbox"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a1efe12a1469752d0e6ff5ebec0b6ef4924cc5c4c71046b0ec730040535819d"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5919,6 +5961,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "which"
+version = "8.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bae2f2b2b816647a1cab1acc91f5bd20812d53cb344382635ec2181940c8034f"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6274,6 +6325,12 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "wsl"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dab7ac864710bdea6594becbea5b5050333cf34fefb0dc319567eb347950d4"
 
 [[package]]
 name = "wyz"

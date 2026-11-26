@@ -172,6 +172,46 @@ fn generate_age_identity_at(file: &Path) -> anyhow::Result<String> {
     Ok(recipient)
 }
 
+/// Add the age identities in `source` (an identities file: X25519
+/// `AGE-SECRET-KEY-1…` lines and plugin stubs such as age-plugin-yubikey's
+/// `AGE-PLUGIN-YUBIKEY-1…`) to the identities file, skipping ones already
+/// there. Returns how many were added; other lines are ignored.
+pub fn import_age_identities(source: &Path) -> anyhow::Result<usize> {
+    import_age_identities_at(source, &identities_file()?)
+}
+
+fn import_age_identities_at(source: &Path, file: &Path) -> anyhow::Result<usize> {
+    use std::str::FromStr;
+    let incoming = zeroize::Zeroizing::new(fs::read_to_string(source)?);
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)?;
+        restrict_dir(parent)?;
+    }
+    let mut text = zeroize::Zeroizing::new(if file.exists() {
+        fs::read_to_string(file)?
+    } else {
+        String::from("# PassPony age identities\n")
+    });
+    let mut added = 0;
+    for line in incoming.lines().map(str::trim) {
+        let usable = Identity::from_str(line).is_ok()
+            || (line.starts_with("AGE-PLUGIN-") && age::plugin::Identity::from_str(line).is_ok());
+        if !usable || text.lines().any(|l| l.trim() == line) {
+            continue;
+        }
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!("# imported from {}\n{line}\n", source.display()));
+        added += 1;
+    }
+    if added > 0 {
+        fs::write(file, text.as_bytes())?;
+        restrict_file(file)?;
+    }
+    Ok(added)
+}
+
 /// Generate an age identity only if the identities file has none yet, matching
 /// the phones' auto-generate-on-first-run. Returns the new recipient string if
 /// one was created, or `None` if identities already existed.
@@ -447,6 +487,32 @@ mod tests {
 
     // Env-free: these hit explicit paths, not the global config dir, so they do
     // not race the HOME-mutating test above.
+
+    #[test]
+    fn imports_plain_and_yubikey_identities_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("identities");
+        let src = dir.path().join("from-passage");
+        let id = Identity::generate();
+        let stub = age::plugin::Identity::default_for_plugin("yubikey")
+            .unwrap()
+            .to_string();
+        std::fs::write(
+            &src,
+            format!(
+                "# a comment\n{}\n\nnot an identity\n{stub}\n",
+                id.to_string().expose_secret()
+            ),
+        )
+        .unwrap();
+        assert_eq!(import_age_identities_at(&src, &file).unwrap(), 2);
+        assert_eq!(import_age_identities_at(&src, &file).unwrap(), 0);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains(&stub));
+        assert!(!text.contains("not an identity"));
+        let backend = AgeBackend::from_identities_text(&text);
+        assert!(backend.has_plugin_identities());
+    }
 
     #[test]
     fn ensure_age_identity_generates_once() {

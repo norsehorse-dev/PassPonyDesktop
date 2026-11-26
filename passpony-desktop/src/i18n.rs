@@ -162,6 +162,8 @@ pub struct Strings {
     pub delete: &'static str,
     pub confirm_delete: &'static str,
     pub cancel: &'static str,
+    /// The button that sends a YubiKey PIN.
+    pub unlock: &'static str,
     pub password: &'static str,
     pub reveal: &'static str,
     pub copy: &'static str,

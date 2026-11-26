@@ -35,6 +35,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "list" | "ls" => list(args.get(1).map(String::as_str)),
         "keys" => keys_list(),
         "import-key" => import_key(args.get(1).map(String::as_str)),
+        "import-identities" => import_identities(args.get(1).map(String::as_str)),
         "gen-identity" => gen_identity(),
         "show" | "cat" => show(
             args.get(1).map(String::as_str),
@@ -74,10 +75,14 @@ USAGE:
                              list entries in the default store (no decryption)
     passpony show <entry> [pass|passage]
                              decrypt and print an entry (PASSPONY_PASSPHRASE for
-                             a passphrase-locked pass key)
+                             a passphrase-locked pass key; a YubiKey identity
+                             asks for its PIN, or takes PASSPONY_PIV_PIN)
     passpony keys            list imported pass keys and age identities
     passpony import-key <file>
                              import an OpenPGP key file (public or secret)
+    passpony import-identities <file>
+                             add the age identities in an identities file (such
+                             as passage's, with age-plugin-yubikey stubs)
     passpony gen-identity    generate a new age identity for passage
     passpony gen-password [len]
                              print a generated password (default 20)
@@ -283,7 +288,7 @@ fn show(entry: Option<&str>, which: Option<&str>) -> i32 {
         }
         StoreFormat::Passage => {
             let backend = match crate::keys::load_age_backend() {
-                Ok(b) => b,
+                Ok(b) => b.with_prompter(std::sync::Arc::new(TerminalPrompter)),
                 Err(e) => {
                     eprintln!("passpony: {e}");
                     return 1;
@@ -399,6 +404,61 @@ fn list(which: Option<&str>) -> i32 {
         },
         Err(e) => {
             eprintln!("passpony: cannot open {}: {e}", root.display());
+            1
+        }
+    }
+}
+
+/// YubiKey (age plugin) prompts on the terminal: messages and questions on
+/// stderr, answers from stdin, the PIN without echo (or from
+/// `PASSPONY_PIV_PIN`, the way `PASSPONY_PASSPHRASE` gives the pass one).
+struct TerminalPrompter;
+
+impl crate::crypto::age_backend::PluginPrompter for TerminalPrompter {
+    fn message(&self, text: &str) {
+        eprintln!("{text}");
+    }
+
+    fn confirm(&self, text: &str, yes: &str, no: Option<&str>) -> Option<bool> {
+        match no {
+            Some(no) => eprint!("{text}\n  [1] {yes}\n  [2] {no}\n> "),
+            None => eprint!("{text}\n  [1] {yes}\n> "),
+        }
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok()?;
+        match line.trim() {
+            "1" => Some(true),
+            "2" if no.is_some() => Some(false),
+            _ => None,
+        }
+    }
+
+    fn secret(&self, description: &str) -> Option<age::secrecy::SecretString> {
+        if let Ok(pin) = std::env::var("PASSPONY_PIV_PIN") {
+            return Some(pin.into());
+        }
+        rpassword::prompt_password(format!("{description}: "))
+            .ok()
+            .filter(|pin| !pin.is_empty())
+            .map(Into::into)
+    }
+}
+
+fn import_identities(path: Option<&str>) -> i32 {
+    let Some(path) = path else {
+        eprintln!("passpony: import-identities needs an age identities file");
+        return 2;
+    };
+    match crate::keys::import_age_identities(std::path::Path::new(path)) {
+        Ok(n) => {
+            println!(
+                "imported {n} age identit{}",
+                if n == 1 { "y" } else { "ies" }
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("passpony: {e}");
             1
         }
     }

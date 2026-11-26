@@ -17,6 +17,7 @@ pub mod edit;
 pub mod entry_view;
 pub mod i18n;
 pub mod keys;
+pub mod pin_cache;
 pub mod pwgen;
 pub mod sync;
 

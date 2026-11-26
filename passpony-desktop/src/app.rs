@@ -183,6 +183,9 @@ pub struct App {
     pub key_pin: String,
     /// Set when a PIN prompt opens, so its field takes focus once.
     pub key_pin_focus: bool,
+    /// The YubiKey PIN, remembered for [`PASSPHRASE_TTL`] after it opens an
+    /// entry.
+    pin_cache: crate::pin_cache::PinCache,
 
     // First-run onboarding.
     pub onboarding: Option<Onboarding>,
@@ -254,6 +257,7 @@ impl App {
             key_prompt: None,
             key_pin: String::new(),
             key_pin_focus: false,
+            pin_cache: crate::pin_cache::PinCache::new(PASSPHRASE_TTL),
             onboarding: (!keys::is_onboarded()).then(Onboarding::new),
             lang,
             theme,
@@ -779,6 +783,7 @@ impl App {
     }
 
     pub fn close_store(&mut self) {
+        self.pin_cache.clear();
         self.store = None;
         self.entries = None;
         self.selected = None;
@@ -820,6 +825,10 @@ impl App {
 
     /// Send the typed PIN to the YubiKey plugin, or cancel (`send` false).
     pub fn answer_key_secret(&mut self, send: bool) {
+        if let (true, Some(KeyPrompt::Secret { description })) = (send, &self.key_prompt) {
+            self.pin_cache
+                .typed(description, zeroize::Zeroizing::new(self.key_pin.clone()));
+        }
         self.key_prompt = None;
         let pin = send.then(|| age::secrecy::SecretString::from(self.key_pin.clone()));
         self.wipe_key_pin();
@@ -842,11 +851,19 @@ impl App {
                     self.key_prompt = Some(KeyPrompt::Confirm { text, yes, no });
                 }
                 tasks::DecryptEvent::Secret(description) => {
+                    // A PIN remembered for this YubiKey answers without asking.
+                    if let Some(pin) = self.pin_cache.answer(&description, Instant::now()) {
+                        if let Some(job) = &self.decrypt_job {
+                            job.secret(Some(age::secrecy::SecretString::from(pin.to_string())));
+                        }
+                        continue;
+                    }
                     self.wipe_key_pin();
                     self.key_prompt = Some(KeyPrompt::Secret { description });
                     self.key_pin_focus = true;
                 }
                 tasks::DecryptEvent::Done(result) => {
+                    self.pin_cache.finish(result.is_ok(), Instant::now());
                     self.decrypt_job = None;
                     self.key_message = None;
                     self.key_prompt = None;
@@ -865,6 +882,7 @@ impl App {
 
     /// Expire the cached passphrase once its TTL is up.
     pub fn expire_passphrase_if_stale(&mut self) {
+        self.pin_cache.expire(Instant::now());
         if let Some(at) = self.passphrase_set_at {
             if at.elapsed() >= PASSPHRASE_TTL {
                 self.passphrase.clear();
@@ -1091,6 +1109,7 @@ impl App {
                 // A YubiKey identity may need the PIN and a touch: open the
                 // entry on a worker so the window stays live and can ask.
                 Ok(b) if b.has_plugin_identities() => {
+                    self.pin_cache.begin();
                     self.decrypt_job =
                         Some(tasks::spawn_decrypt(store.root().to_path_buf(), name, b));
                     return;

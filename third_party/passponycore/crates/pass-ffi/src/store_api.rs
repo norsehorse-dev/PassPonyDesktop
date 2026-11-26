@@ -1,5 +1,5 @@
-//! The app-facing FFI surface: store, git sync, TOTP. Thin translation over
-//! pass-core; no logic lives here.
+//! The app-facing FFI surface: store, git sync, TOTP, password generator.
+//! Thin translation over pass-core; no logic lives here.
 
 use std::sync::{Arc, Mutex};
 
@@ -72,7 +72,7 @@ impl PassStore {
         }))
     }
 
-    /// Full index including hidden entries, byte-sorted — feeds browse,
+    /// Full index including hidden entries, byte-sorted; feeds browse,
     /// search, and the autofill identity store (names only, no secrets).
     pub fn entries(&self) -> Result<Vec<EntryRef>, StoreError> {
         Ok(self
@@ -145,11 +145,86 @@ impl PassStore {
         let adapter = ForeignBackendAdapter(backend);
         Ok(self.inner.reencrypt_subtree(&subpath, &adapter)?)
     }
+
+    /// 2.0 rc4: re-encrypt what this device can open and leave the rest
+    /// untouched, counting it (see `pass_core::store::Store::reencrypt_readable`).
+    pub fn reencrypt_readable(
+        &self,
+        subpath: String,
+        backend: Arc<dyn CryptoBackend>,
+    ) -> Result<ReencryptReport, StoreError> {
+        let adapter = ForeignBackendAdapter(backend);
+        let r = self.inner.reencrypt_readable(&subpath, &adapter)?;
+        Ok(ReencryptReport {
+            rewritten: r.rewritten,
+            skipped: r.skipped,
+        })
+    }
+
+    /// The root `.age-recipients` (or `.gpg-id`) text, if the store has one.
+    pub fn root_recipients(&self) -> Result<Option<String>, StoreError> {
+        Ok(self.inner.root_recipients()?)
+    }
+
+    pub fn set_root_recipients(&self, text: String) -> Result<(), StoreError> {
+        Ok(self.inner.set_root_recipients(&text)?)
+    }
+}
+
+/// What `PassStore::reencrypt_readable` rewrote, and how many entries it
+/// could not open with this device's keys and left alone.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ReencryptReport {
+    pub rewritten: Vec<String>,
+    pub skipped: u32,
+}
+
+/// A `.age-recipients` text after an edit, and how many lines changed.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RecipientsEdit {
+    pub text: String,
+    pub changed: u32,
+}
+
+/// The recipients a `.age-recipients` text lists, as age reads it.
+#[uniffi::export]
+pub fn recipients_in(text: String) -> Vec<String> {
+    pass_core::recipients::recipients_in(&text)
+}
+
+/// Append the keys the text does not list yet; everything else stays.
+#[uniffi::export]
+pub fn recipients_add(existing: String, keys: Vec<String>) -> RecipientsEdit {
+    let r = pass_core::recipients::add_recipients(&existing, &keys);
+    RecipientsEdit {
+        text: r.text,
+        changed: r.added,
+    }
+}
+
+/// Drop the lines that are exactly `key`; everything else stays.
+#[uniffi::export]
+pub fn recipients_remove(existing: String, key: String) -> RecipientsEdit {
+    let r = pass_core::recipients::remove_recipient(&existing, &key);
+    RecipientsEdit {
+        text: r.text,
+        changed: u32::from(r.removed),
+    }
+}
+
+#[uniffi::export]
+pub fn commit_message_recipients_add() -> String {
+    pass_core::git::messages::recipients_add()
+}
+
+#[uniffi::export]
+pub fn commit_message_recipients_remove() -> String {
+    pass_core::git::messages::recipients_remove()
 }
 
 // --- entry content helpers (pure functions over plaintext bytes) -------------
 
-/// First line of the plaintext — the password.
+/// First line of the plaintext: the password.
 #[uniffi::export]
 pub fn entry_password(content: Vec<u8>) -> Vec<u8> {
     pass_core::entry::Entry::from_bytes(content)
@@ -193,6 +268,34 @@ pub fn entry_set_password(content: Vec<u8>, password: Vec<u8>) -> Vec<u8> {
     entry.to_bytes().to_vec()
 }
 
+/// Byte-faithful `otpauth://` line set (replace the first URI line's text, or
+/// append one); returns the new full plaintext. `uri` should come from
+/// [`totp_build_uri`] or have passed [`totp_describe`].
+#[uniffi::export]
+pub fn entry_set_otpauth(content: Vec<u8>, uri: String) -> Vec<u8> {
+    let mut entry = pass_core::entry::Entry::from_bytes(content);
+    entry.set_otpauth(&uri);
+    entry.to_bytes().to_vec()
+}
+
+/// Remove the first `otpauth://` line with its line ending; returns the new
+/// full plaintext. The bytes come back unchanged when there is no URI or the
+/// URI is line 1 (an OTP-only entry is deleted whole, never edited; see
+/// [`entry_is_otp_only`]).
+#[uniffi::export]
+pub fn entry_remove_otpauth(content: Vec<u8>) -> Vec<u8> {
+    let mut entry = pass_core::entry::Entry::from_bytes(content);
+    entry.remove_otpauth();
+    entry.to_bytes().to_vec()
+}
+
+/// True when line 1 is the `otpauth://` URI (what `pass otp insert` writes),
+/// so the UI shows the code and no password row.
+#[uniffi::export]
+pub fn entry_is_otp_only(content: Vec<u8>) -> bool {
+    pass_core::entry::Entry::from_bytes(content).is_otp_only()
+}
+
 // --- TOTP --------------------------------------------------------------------
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -204,8 +307,9 @@ pub struct TotpCode {
 }
 
 /// Current TOTP code for an entry's plaintext, if it carries an
-/// `otpauth://totp/` line. `unix_time` is passed in so the view layer owns
-/// the clock (and the ring can tick without re-decrypting).
+/// `otpauth://totp/` line (any line, line 1 included, first match wins).
+/// `unix_time` is passed in so the view layer owns the clock (and the ring
+/// can tick without re-decrypting).
 #[uniffi::export]
 pub fn entry_totp(content: Vec<u8>, unix_time: u64) -> Option<TotpCode> {
     let entry = pass_core::entry::Entry::from_bytes(content);
@@ -217,6 +321,242 @@ pub fn entry_totp(content: Vec<u8>, unix_time: u64) -> Option<TotpCode> {
         period: totp.period,
         label: totp.label.clone(),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TotpAlgorithm {
+    Sha1,
+    Sha256,
+    Sha512,
+}
+
+impl From<TotpAlgorithm> for pass_core::totp::TotpAlgorithm {
+    fn from(a: TotpAlgorithm) -> Self {
+        match a {
+            TotpAlgorithm::Sha1 => pass_core::totp::TotpAlgorithm::Sha1,
+            TotpAlgorithm::Sha256 => pass_core::totp::TotpAlgorithm::Sha256,
+            TotpAlgorithm::Sha512 => pass_core::totp::TotpAlgorithm::Sha512,
+        }
+    }
+}
+
+impl From<pass_core::totp::TotpAlgorithm> for TotpAlgorithm {
+    fn from(a: pass_core::totp::TotpAlgorithm) -> Self {
+        match a {
+            pass_core::totp::TotpAlgorithm::Sha1 => TotpAlgorithm::Sha1,
+            pass_core::totp::TotpAlgorithm::Sha256 => TotpAlgorithm::Sha256,
+            pass_core::totp::TotpAlgorithm::Sha512 => TotpAlgorithm::Sha512,
+        }
+    }
+}
+
+/// Everything about a code except its secret, for the edit screen's
+/// "GitHub (kevin), 6 digits, 30 s" line and for validating a pasted or
+/// scanned URI before it is written.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TotpSummary {
+    pub label: String,
+    pub issuer: Option<String>,
+    pub algorithm: TotpAlgorithm,
+    pub digits: u32,
+    pub period: u64,
+}
+
+impl From<&pass_core::totp::Totp> for TotpSummary {
+    fn from(t: &pass_core::totp::Totp) -> Self {
+        TotpSummary {
+            label: t.label.clone(),
+            issuer: t.issuer.clone(),
+            algorithm: t.algorithm.into(),
+            digits: t.digits,
+            period: t.period,
+        }
+    }
+}
+
+/// Why a URI or a typed key was rejected. Variants carry no secret material.
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum TotpError {
+    #[error("not an otpauth:// totp URI")]
+    NotTotpUri,
+    #[error("missing secret")]
+    MissingSecret,
+    #[error("secret is not valid base32")]
+    BadSecret,
+    #[error("unsupported algorithm: {name}")]
+    BadAlgorithm { name: String },
+    #[error("invalid number: {detail}")]
+    BadNumber { detail: String },
+    #[error("not an otpauth:// hotp URI")]
+    NotHotpUri,
+    #[error("hotp URI has no counter")]
+    MissingCounter,
+}
+
+impl From<pass_core::totp::TotpError> for TotpError {
+    fn from(e: pass_core::totp::TotpError) -> Self {
+        use pass_core::totp::TotpError as E;
+        match e {
+            E::NotTotpUri => TotpError::NotTotpUri,
+            E::MissingSecret => TotpError::MissingSecret,
+            E::BadSecret => TotpError::BadSecret,
+            E::BadAlgorithm(name) => TotpError::BadAlgorithm { name },
+            E::BadNumber(detail) => TotpError::BadNumber { detail },
+            E::NotHotpUri => TotpError::NotHotpUri,
+            E::MissingCounter => TotpError::MissingCounter,
+        }
+    }
+}
+
+/// The entry's code configuration without its secret, if the entry carries
+/// a parsable `otpauth://totp/` line.
+#[uniffi::export]
+pub fn entry_totp_summary(content: Vec<u8>) -> Option<TotpSummary> {
+    let entry = pass_core::entry::Entry::from_bytes(content);
+    let uri = entry.otpauth()?;
+    let totp = pass_core::totp::Totp::from_uri(uri).ok()?;
+    Some((&totp).into())
+}
+
+/// Validate a pasted or scanned URI and describe it. HOTP and
+/// `otpauth-migration://` URIs fail with `NotTotpUri`.
+#[uniffi::export]
+pub fn totp_describe(uri: String) -> Result<TotpSummary, TotpError> {
+    let totp = pass_core::totp::Totp::from_uri(uri.trim())?;
+    Ok((&totp).into())
+}
+
+/// Check a typed base32 secret as the user goes; returns its decoded length
+/// in bytes.
+#[uniffi::export]
+pub fn totp_validate_secret(secret: String) -> Result<u32, TotpError> {
+    let len = pass_core::totp::validate_secret(&secret)?;
+    Ok(u32::try_from(len).unwrap_or(u32::MAX))
+}
+
+/// Build the canonical `otpauth://totp/` URI from the manual form. Digits
+/// must be 6 to 8; period at least 1. Defaults (SHA1, 6, 30) are omitted
+/// from the URI, so the same inputs give the same line on every platform.
+#[uniffi::export]
+pub fn totp_build_uri(
+    secret: String,
+    account: String,
+    issuer: Option<String>,
+    algorithm: TotpAlgorithm,
+    digits: u32,
+    period: u64,
+) -> Result<String, TotpError> {
+    let totp = pass_core::totp::Totp::new(
+        &secret,
+        &account,
+        issuer.as_deref(),
+        algorithm.into(),
+        digits,
+        period,
+    )?;
+    Ok(totp.to_uri())
+}
+
+// --- password generator ------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SymbolSet {
+    /// Letters and digits only (`pass generate --no-symbols`).
+    NoSymbols,
+    /// The portal-safe punctuation subset.
+    Basic,
+    /// All 32 printable ASCII punctuation characters, the pass default.
+    Full,
+}
+
+impl From<SymbolSet> for pass_core::generate::SymbolSet {
+    fn from(s: SymbolSet) -> Self {
+        match s {
+            SymbolSet::NoSymbols => pass_core::generate::SymbolSet::None,
+            SymbolSet::Basic => pass_core::generate::SymbolSet::Basic,
+            SymbolSet::Full => pass_core::generate::SymbolSet::Full,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct GeneratorSpec {
+    pub length: u32,
+    pub lowercase: bool,
+    pub uppercase: bool,
+    pub digits: bool,
+    pub symbols: SymbolSet,
+}
+
+impl From<GeneratorSpec> for pass_core::generate::GeneratorSpec {
+    fn from(s: GeneratorSpec) -> Self {
+        pass_core::generate::GeneratorSpec {
+            length: s.length,
+            lowercase: s.lowercase,
+            uppercase: s.uppercase,
+            digits: s.digits,
+            symbols: s.symbols.into(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum GenerateError {
+    #[error("length must be between {min} and {max}")]
+    BadLength { min: u32, max: u32 },
+    #[error("at least one character class must be enabled")]
+    NoClasses,
+    #[error("no entropy source: {reason}")]
+    Entropy { reason: String },
+}
+
+impl From<pass_core::generate::GenerateError> for GenerateError {
+    fn from(e: pass_core::generate::GenerateError) -> Self {
+        use pass_core::generate::GenerateError as E;
+        match e {
+            E::BadLength => GenerateError::BadLength {
+                min: pass_core::generate::MIN_LENGTH,
+                max: pass_core::generate::MAX_LENGTH,
+            },
+            E::NoClasses => GenerateError::NoClasses,
+            E::Entropy(reason) => GenerateError::Entropy { reason },
+        }
+    }
+}
+
+/// pass's `generate` defaults: 25 characters, every class, full symbols.
+/// What a fresh install uses until the user changes something.
+#[uniffi::export]
+pub fn generator_pass_default() -> GeneratorSpec {
+    GeneratorSpec {
+        length: pass_core::generate::DEFAULT_LENGTH,
+        lowercase: true,
+        uppercase: true,
+        digits: true,
+        symbols: SymbolSet::Full,
+    }
+}
+
+/// The punctuation a symbol set contributes, for showing under the picker.
+#[uniffi::export]
+pub fn generator_symbols(set: SymbolSet) -> String {
+    match set {
+        SymbolSet::NoSymbols => String::new(),
+        SymbolSet::Basic => pass_core::generate::SYMBOLS_BASIC.to_owned(),
+        SymbolSet::Full => pass_core::generate::SYMBOLS_FULL.to_owned(),
+    }
+}
+
+/// The full alphabet a spec draws from (for previews and parity tests).
+#[uniffi::export]
+pub fn generator_charset(spec: GeneratorSpec) -> Result<String, GenerateError> {
+    Ok(pass_core::generate::charset(&spec.into())?)
+}
+
+/// A new password from OS entropy, every enabled class present at least once.
+#[uniffi::export]
+pub fn generate_password(spec: GeneratorSpec) -> Result<String, GenerateError> {
+    Ok(pass_core::generate::generate(&spec.into())?)
 }
 
 // --- git sync ----------------------------------------------------------------
@@ -233,6 +573,26 @@ pub enum GitError {
     UpstreamRewritten,
     #[error("uncommitted changes present")]
     DirtyWorkdir,
+    /// First connection to an SSH host: show `key.fingerprint`, and on the
+    /// user's yes pin it with `known_hosts_add(text, host, key)` and retry.
+    #[error("unknown SSH host {host}")]
+    UnknownHostKey {
+        host: String,
+        key: crate::ssh_api::HostKey,
+    },
+    /// A pinned host presented a different key. Refuse; no override.
+    #[error("SSH host key for {host} changed")]
+    HostKeyChanged {
+        host: String,
+        fingerprint: String,
+        pinned_fingerprint: String,
+    },
+    #[error("the SSH host sent no usable host key")]
+    NoHostKey,
+    #[error("this remote needs an SSH key and none is set up")]
+    SshKeyMissing,
+    #[error("the SSH host didn't accept this app's key")]
+    SshAuthFailed,
     #[error("git: {reason}")]
     Other { reason: String },
 }
@@ -246,9 +606,42 @@ impl From<pass_core::git::GitError> for GitError {
             E::NonFastForward => GitError::NonFastForward,
             E::UpstreamRewritten => GitError::UpstreamRewritten,
             E::DirtyWorkdir => GitError::DirtyWorkdir,
+            E::UnknownHostKey { host, key } => GitError::UnknownHostKey {
+                host,
+                key: key.into(),
+            },
+            E::HostKeyChanged {
+                host,
+                fingerprint,
+                pinned_fingerprint,
+            } => GitError::HostKeyChanged {
+                host,
+                fingerprint,
+                pinned_fingerprint,
+            },
+            E::NoHostKey => GitError::NoHostKey,
+            E::SshKeyMissing => GitError::SshKeyMissing,
+            E::SshAuthFailed => GitError::SshAuthFailed,
             other => GitError::Other {
                 reason: other.to_string(),
             },
+        }
+    }
+}
+
+/// What SSH remotes need: the app's key (unencrypted OpenSSH text) and its
+/// known_hosts text. HTTPS remotes ignore it, so passing it always is fine.
+#[derive(Clone, uniffi::Record)]
+pub struct SshConfig {
+    pub private_key: Option<String>,
+    pub known_hosts: String,
+}
+
+impl From<SshConfig> for pass_core::git::SshConfig {
+    fn from(c: SshConfig) -> Self {
+        pass_core::git::SshConfig {
+            private_key: c.private_key.map(zeroize::Zeroizing::new),
+            known_hosts: c.known_hosts,
         }
     }
 }
@@ -269,7 +662,7 @@ pub enum ConflictChoice {
 }
 
 /// Implemented by the app: asked once per conflicted file during sync.
-/// Called on the sync thread — present UI and block until the user chooses.
+/// Called on the sync thread: present UI and block until the user chooses.
 #[uniffi::export(with_foreign)]
 pub trait ConflictResolver: Send + Sync {
     fn choose(&self, entry_path: String) -> ConflictChoice;
@@ -321,6 +714,30 @@ impl GitSync {
         }))
     }
 
+    /// Clone with SSH settings; the handle keeps them for sync and push.
+    #[uniffi::constructor]
+    pub fn clone_with_ssh(
+        url: String,
+        dest: String,
+        depth: Option<i32>,
+        ssh: SshConfig,
+    ) -> Result<Arc<Self>, GitError> {
+        Ok(Arc::new(GitSync {
+            inner: Mutex::new(pass_core::git::GitStore::clone_with_ssh(
+                &url,
+                dest,
+                depth,
+                ssh.into(),
+            )?),
+        }))
+    }
+
+    /// The SSH key and known hosts used by later syncs and pushes. Call it
+    /// again after the user pins a host or changes the key.
+    pub fn set_ssh(&self, ssh: SshConfig) {
+        self.inner.lock().unwrap().set_ssh(ssh.into());
+    }
+
     pub fn status(&self) -> Result<SyncStatus, GitError> {
         let st = self.inner.lock().unwrap().status()?;
         Ok(SyncStatus {
@@ -366,7 +783,7 @@ impl GitSync {
         Ok(())
     }
 
-    /// Create or repoint the `origin` remote — the publish-existing-store
+    /// Create or repoint the `origin` remote; the publish-existing-store
     /// flow is init → set_remote → push.
     pub fn set_remote(&self, url: String) -> Result<(), GitError> {
         self.inner.lock().unwrap().set_remote(&url)?;
@@ -374,7 +791,7 @@ impl GitSync {
     }
 
     /// The `origin` remote's URL, if configured. May contain embedded
-    /// credentials — redact userinfo before displaying.
+    /// credentials; redact userinfo before displaying.
     pub fn remote_url(&self) -> Option<String> {
         self.inner.lock().unwrap().remote_url()
     }
@@ -451,5 +868,105 @@ mod tests {
             .map(|e| e.name)
             .collect();
         assert_eq!(names, vec!["web/example".to_string()]);
+    }
+
+    #[test]
+    fn otp_helpers_over_the_ffi_surface() {
+        let uri = totp_build_uri(
+            "jbsw y3dp ehpk 3pxp".into(),
+            "kevin".into(),
+            Some("Example".into()),
+            TotpAlgorithm::Sha1,
+            6,
+            30,
+        )
+        .unwrap();
+        assert_eq!(
+            uri,
+            "otpauth://totp/Example:kevin?secret=JBSWY3DPEHPK3PXP&issuer=Example"
+        );
+        let summary = totp_describe(format!("  {uri}\n")).unwrap();
+        assert_eq!(summary.label, "Example:kevin");
+        assert_eq!(summary.issuer.as_deref(), Some("Example"));
+        assert_eq!(summary.algorithm, TotpAlgorithm::Sha1);
+        assert_eq!((summary.digits, summary.period), (6, 30));
+        assert!(matches!(
+            totp_describe("otpauth://hotp/X?secret=JBSWY3DP".into()),
+            Err(TotpError::NotTotpUri)
+        ));
+        assert!(matches!(
+            totp_build_uri("".into(), "k".into(), None, TotpAlgorithm::Sha1, 6, 30),
+            Err(TotpError::MissingSecret)
+        ));
+        assert_eq!(totp_validate_secret("JBSWY3DPEHPK3PXP".into()).unwrap(), 10);
+
+        // Append to a plain entry, read it back, replace, remove.
+        let plain = b"pw\nusername: kevin\n".to_vec();
+        assert!(entry_totp_summary(plain.clone()).is_none());
+        assert!(!entry_is_otp_only(plain.clone()));
+        let with_otp = entry_set_otpauth(plain.clone(), uri.clone());
+        assert_eq!(
+            with_otp,
+            format!("pw\nusername: kevin\n{uri}\n").into_bytes()
+        );
+        assert_eq!(entry_totp_summary(with_otp.clone()).unwrap(), summary);
+        assert!(entry_totp(with_otp.clone(), 59).is_some());
+        let uri2 = "otpauth://totp/Other?secret=MZXW6YTBOI".to_string();
+        let replaced = entry_set_otpauth(with_otp.clone(), uri2.clone());
+        assert_eq!(
+            replaced,
+            format!("pw\nusername: kevin\n{uri2}\n").into_bytes()
+        );
+        assert_eq!(entry_remove_otpauth(replaced), plain);
+
+        // An OTP-only entry (line 1 is the URI) reads as a code and refuses
+        // removal.
+        let otp_only = format!("{uri}\n").into_bytes();
+        assert!(entry_is_otp_only(otp_only.clone()));
+        assert!(entry_totp(otp_only.clone(), 59).is_some());
+        assert_eq!(entry_remove_otpauth(otp_only.clone()), otp_only);
+    }
+
+    #[test]
+    fn generator_over_the_ffi_surface() {
+        let spec = generator_pass_default();
+        assert_eq!(spec.length, 25);
+        assert_eq!(
+            generator_charset(spec.clone()).unwrap(),
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+        );
+        let pw = generate_password(spec).unwrap();
+        assert_eq!(pw.len(), 25);
+        let portal = GeneratorSpec {
+            length: 19,
+            lowercase: true,
+            uppercase: true,
+            digits: true,
+            symbols: SymbolSet::Basic,
+        };
+        let pw = generate_password(portal).unwrap();
+        assert_eq!(pw.len(), 19);
+        assert_eq!(generator_symbols(SymbolSet::Basic), "!#$%&()*+,-.=?@_");
+        assert_eq!(generator_symbols(SymbolSet::NoSymbols), "");
+        assert!(matches!(
+            generate_password(GeneratorSpec {
+                length: 4,
+                lowercase: true,
+                uppercase: true,
+                digits: true,
+                symbols: SymbolSet::Full,
+            }),
+            Err(GenerateError::BadLength { min: 8, max: 128 })
+        ));
+        assert!(matches!(
+            generate_password(GeneratorSpec {
+                length: 20,
+                lowercase: false,
+                uppercase: false,
+                digits: false,
+                symbols: SymbolSet::NoSymbols,
+            }),
+            Err(GenerateError::NoClasses)
+        ));
     }
 }

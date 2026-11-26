@@ -13,6 +13,15 @@ use std::sync::Arc;
 mod store_api;
 pub use store_api::*;
 
+mod keys_otp_api;
+pub use keys_otp_api::*;
+
+mod ssh_api;
+pub use ssh_api::*;
+
+mod passkey_api;
+pub use passkey_api::*;
+
 // Android-only Rust age engine. Off by default (iOS's FFI surface is
 // unchanged unless this feature is explicitly enabled); see
 // docs/plan/P04-core-age-engine.md in PassPonyAndroid for why this lives
@@ -22,7 +31,33 @@ mod age_engine;
 #[cfg(feature = "age-engine")]
 pub use age_engine::*;
 
+// iOS-only Rust OpenPGP engine for pass stores: RSA and the other keys
+// and packets NorseHorsePGPCore can't read. Off by default, so Android's
+// FFI surface and reproducible .so are unchanged; iOS's build-core.sh
+// turns it on.
+#[cfg(feature = "pgp-engine")]
+mod pgp_engine;
+#[cfg(feature = "pgp-engine")]
+pub use pgp_engine::*;
+
 uniffi::setup_scaffolding!();
+
+/// Point the git transport's OpenSSL at a CA bundle.
+///
+/// Android has no OpenSSL-visible system trust store, so the vendored
+/// OpenSSL the git core links starts with zero trust anchors and every
+/// HTTPS git handshake fails certificate verification (libgit2 reports
+/// class=Ssl (16)). On desktop and CI, OpenSSL finds the system store at
+/// its built-in path, which is why sync works there. The platform copies
+/// the app's bundled cacert.pem into local storage and passes its path
+/// here once at startup, before any clone/fetch/push. The core loads the
+/// bundle's roots into libgit2's certificate store so the transport can
+/// verify the server.
+#[uniffi::export]
+pub fn init_tls(ca_file: String) {
+    // Only ever called once at process startup, before any network or git use.
+    pass_core::git::init_tls(&ca_file);
+}
 
 /// FFI-facing crypto error. Mirrors `pass_core::crypto::CryptoError`; variants
 /// carry no entry names and no plaintext.

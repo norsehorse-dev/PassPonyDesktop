@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/pass-core", "crates/pass-ffi", "crates/pass-devtools"]
+members = ["crates/pass-core", "crates/pass-ffi", "crates/pass-devtools", "crates/pass-age-piv"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
+version = "2.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/norsehorse-dev/passponycore"

@@ -3,7 +3,7 @@
 //! byte-for-byte.
 //!
 //! Corpus location: ../../fixtures (or PASSPONY_FIXTURES). Regenerate with
-//! fixtures/gen-fixtures.sh; requires pass, passage, age, gpg, tree.
+//! fixtures/gen-fixtures.sh; requires pass, pass-otp, passage, age, gpg, tree.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -218,6 +218,107 @@ fn hidden_entries_indexed_but_not_listed() {
     let rendered = render_ls(&store).unwrap();
     assert!(!rendered.contains("hidden"));
     assert!(!rendered.contains(".secret"));
+}
+
+/// The pass-otp goldens (fixtures/pass/otp) hold the codec's otpauth
+/// operations to the extension's own bytes: `set_otpauth` on the plain entry
+/// must equal what `pass otp append` wrote, replacing must equal a second
+/// append over the existing URI, and an entry made by `pass otp insert`
+/// (URI on line 1) must read as a code, the way `pass otp code` reads it.
+#[test]
+fn otpauth_operations_match_pass_otp() {
+    use pass_core::entry::Entry;
+
+    let fx = fixtures_root().join("pass/otp");
+    let golden =
+        |kind: &str, name: &str| fs::read(fx.join(format!("goldens/{kind}/{name}.out"))).unwrap();
+    let uri = |name: &str| {
+        String::from_utf8(golden("otp-uri", name))
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+
+    let base = golden("show", "base");
+    let appended = golden("show", "appended");
+    let replaced = golden("show", "replaced");
+    let insert_only = golden("show", "insert-only");
+    let uri_a = uri("appended");
+    let uri_b = uri("replaced");
+    assert!(uri_a.starts_with("otpauth://totp/"));
+    assert_ne!(uri_a, uri_b);
+    assert_eq!(uri("insert-only"), uri_a);
+    assert_eq!(uri("base"), "");
+
+    // Read path: same line the extension reports, line 1 included.
+    let store = Store::open(fx.join("store"), StoreFormat::Pass).unwrap();
+    let backend = GpgCliBackend {
+        gnupghome: Some(test_gnupghome()),
+    };
+    let read = |name: &str| store.read_entry(name, &backend).unwrap();
+    assert_eq!(read("base").otpauth(), None);
+    assert_eq!(read("appended").otpauth().unwrap(), uri_a);
+    assert_eq!(read("replaced").otpauth().unwrap(), uri_b);
+    let only = read("insert-only");
+    assert_eq!(only.otpauth().unwrap(), uri_a);
+    assert!(only.is_otp_only());
+    assert!(!read("appended").is_otp_only());
+
+    // Write path, byte for byte against what pass-otp produced.
+    let mut e = Entry::from_bytes(base.clone());
+    e.set_otpauth(&uri_a);
+    assert_eq!(e.to_bytes(), appended.as_slice(), "append");
+    let mut e = Entry::from_bytes(appended.clone());
+    e.set_otpauth(&uri_b);
+    assert_eq!(e.to_bytes(), replaced.as_slice(), "replace");
+    let mut e = Entry::from_bytes(Vec::new());
+    e.set_otpauth(&uri_a);
+    assert_eq!(
+        e.to_bytes(),
+        insert_only.as_slice(),
+        "insert on a new entry"
+    );
+    // And back: removing the appended line restores the plain entry.
+    let mut e = Entry::from_bytes(appended);
+    assert!(e.remove_otpauth());
+    assert_eq!(e.to_bytes(), base.as_slice(), "remove");
+    let mut e = Entry::from_bytes(insert_only.clone());
+    assert!(!e.remove_otpauth());
+    assert_eq!(e.to_bytes(), insert_only.as_slice(), "line 1 refused");
+}
+
+/// pass-otp's HOTP behavior (fixtures/pass/hotp): starting from the URI
+/// `pass otp insert` stored with counter=0, two advances must print the
+/// same two codes `pass otp code` printed, leave the entry byte-identical to
+/// what the extension wrote back (counter=2), and use its commit subject.
+#[test]
+fn hotp_advance_matches_pass_otp() {
+    use pass_core::entry::Entry;
+    use pass_core::hotp::advance_entry;
+
+    let fx = fixtures_root().join("pass/hotp");
+    let golden = |name: &str| {
+        String::from_utf8(fs::read(fx.join(format!("goldens/{name}.out"))).unwrap()).unwrap()
+    };
+    let start = "otpauth://hotp/Example:kevin?secret=JBSWY3DPEHPK3PXP&counter=0&issuer=Example\n";
+    let mut e = Entry::from_bytes(start.as_bytes().to_vec());
+    let first = advance_entry(&mut e).unwrap();
+    let second = advance_entry(&mut e).unwrap();
+    assert_eq!(first.code, golden("code/first").trim());
+    assert_eq!(second.code, golden("code/second").trim());
+    assert_eq!(second.counter, 2);
+    assert_eq!(e.to_bytes(), golden("show/counter").as_bytes());
+    assert_eq!(
+        pass_core::git::messages::hotp_increment("web/counter"),
+        golden("commit-subject").trim()
+    );
+
+    let store = Store::open(fx.join("store"), StoreFormat::Pass).unwrap();
+    let backend = GpgCliBackend {
+        gnupghome: Some(test_gnupghome()),
+    };
+    let stored = store.read_entry("counter", &backend).unwrap();
+    assert_eq!(stored.to_bytes(), e.to_bytes());
 }
 
 #[test]
